@@ -227,9 +227,9 @@ const BEND_VERT = /* glsl */`
 
   void main() {
     vec4 mvPos = modelMatrix * vec4(position, 1.0);
-    // cylindrical bend relative to camera X — ground is flat underfoot, curves away
+    // interior surface — ground curves UP ahead/behind (inside of cylinder)
     float dist = mvPos.x - camX;
-    float bendY = -(dist * dist) / (2.0 * bendR);
+    float bendY = (dist * dist) / (2.0 * bendR);
     mvPos.y += bendY;
     gl_Position = projectionMatrix * viewMatrix * mvPos;
     vUv = uv;
@@ -323,7 +323,7 @@ const WIN_VERT = /* glsl */`
   void main() {
     vec4 mvPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
     float dist = mvPos.x - camX;
-    mvPos.y -= (dist * dist) / (2.0 * bendR);
+    mvPos.y += (dist * dist) / (2.0 * bendR);
     gl_Position = projectionMatrix * viewMatrix * mvPos;
     vUv = uv;
     vNormal = mat3(modelMatrix * instanceMatrix) * normal;
@@ -571,8 +571,6 @@ function loop() {
   dronePos.z += Math.sin(droneYaw) * speed;
   dronePos.y += dronePitch * speed * 0.5;
   dronePos.y  = Math.max(4, dronePos.y);  // don't clip through ground
-  const zEdge = WORLD_D * 0.5 - 2;
-  dronePos.z  = Math.max(-zEdge, Math.min(zEdge, dronePos.z)); // stay on ring band
 
   // Wrap at end of frontier — city → dark frontier → back to city
   dronePos.x = ((dronePos.x % RING_W) + RING_W) % RING_W;
