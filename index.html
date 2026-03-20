@@ -143,8 +143,8 @@ const SLOT_D      = 4;     // world units per slot (width direction)
 const STREET_EVERY = 10;   // street gap every N slots
 const STREET_W    = 2;     // street width in world units
 
-// Ring bend radius (higher = less curve)
-const BEND_R      = 2200;
+// Ring bend radius — lower = tighter curve. 800 gives visible ring feel at ground level.
+const BEND_R      = 800;
 
 // Grid world dimensions
 const WORLD_W = COLS * SLOT_W + Math.floor(COLS / STREET_EVERY) * STREET_W;
@@ -216,13 +216,14 @@ scene.add(sun);
 // ─── Curved-world vertex shader ───────────────────────────────────────────────
 const BEND_VERT = /* glsl */`
   uniform float bendR;
+  uniform float camX;
   varying vec2 vUv;
   varying vec3 vNormal;
 
   void main() {
     vec4 mvPos = modelMatrix * vec4(position, 1.0);
-    // cylindrical bend along X axis
-    float dist = mvPos.x;
+    // cylindrical bend relative to camera X — ground is flat underfoot, curves away
+    float dist = mvPos.x - camX;
     float bendY = -(dist * dist) / (2.0 * bendR);
     mvPos.y += bendY;
     gl_Position = projectionMatrix * viewMatrix * mvPos;
@@ -243,21 +244,27 @@ const BEND_FRAG = /* glsl */`
   }
 `;
 
+// Track all bend materials so we can update camX each frame
+const allBendMats = [];
+
 function makeBendMat(color, emissiveStr = 0.0) {
-  return new THREE.ShaderMaterial({
+  const mat = new THREE.ShaderMaterial({
     vertexShader: BEND_VERT,
     fragmentShader: BEND_FRAG,
     uniforms: {
       bendR:        { value: BEND_R },
+      camX:         { value: 0 },
       color:        { value: new THREE.Color(color) },
       emissiveStr:  { value: emissiveStr },
     },
     side: THREE.DoubleSide,
   });
+  allBendMats.push(mat);
+  return mat;
 }
 
 // ─── Ground plane ─────────────────────────────────────────────────────────────
-const groundGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 60, 20);
+const groundGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 120, 20);
 groundGeo.rotateX(-Math.PI / 2);
 const groundMat = makeBendMat(0x0d0d0d);
 const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -311,13 +318,14 @@ const WIN_FRAG = /* glsl */`
 
 const WIN_VERT = /* glsl */`
   uniform float bendR;
+  uniform float camX;
   varying vec2 vUv;
   varying vec3 vNormal;
   varying vec4 vMvPos;
 
   void main() {
     vec4 mvPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
-    float dist = mvPos.x;
+    float dist = mvPos.x - camX;
     mvPos.y -= (dist * dist) / (2.0 * bendR);
     gl_Position = projectionMatrix * viewMatrix * mvPos;
     vUv = uv;
@@ -333,10 +341,12 @@ const buildingMeshes = B_TYPES.map((t, ti) => {
     fragmentShader: WIN_FRAG,
     uniforms: {
       bendR:     { value: BEND_R },
+      camX:      { value: 0 },
       baseColor: { value: new THREE.Color(t.color) },
       winColor:  { value: new THREE.Color(t.win) },
     },
   });
+  allBendMats.push(mat);
   const mesh = new THREE.InstancedMesh(geo, mat, Math.ceil(ACTIVE / B_TYPES.length) + 200);
   mesh.count = 0;
   scene.add(mesh);
@@ -555,6 +565,9 @@ function loop() {
 
   camera.position.copy(camPos);
   camera.lookAt(camTgt);
+
+  // Update bend camX so curve always follows the drone
+  allBendMats.forEach(m => { m.uniforms.camX.value = dronePos.x; });
 
   drawMinimap();
   updateHUD();
