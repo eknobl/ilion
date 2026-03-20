@@ -150,6 +150,11 @@ const BEND_R      = 600;
 const WORLD_W = COLS * SLOT_W + Math.floor(COLS / STREET_EVERY) * STREET_W;
 const WORLD_D = ROWS * SLOT_D + Math.floor(ROWS / STREET_EVERY) * STREET_W;
 
+// Frontier (dark 1/3 of ring — no buildings, passthrough dark structures)
+const FRONTIER_COLS = 150;
+const FRONTIER_W    = FRONTIER_COLS * SLOT_W + Math.floor(FRONTIER_COLS / STREET_EVERY) * STREET_W;
+const RING_W        = WORLD_W + FRONTIER_W;  // total ring circumference in world units
+
 const DISTRICTS = [
   'CENTAURI SECTOR','TROY DISTRICT','HEPHAESTUS WARD','KEPLER REACH',
   'NOVA BASIN','SIGMA CORRIDOR','ARC FOUNDRY','LYRA FIELDS',
@@ -264,20 +269,12 @@ function makeBendMat(color, emissiveStr = 0.0) {
 }
 
 // ─── Ground plane ─────────────────────────────────────────────────────────────
-const groundGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 120, 20);
+const groundGeo = new THREE.PlaneGeometry(RING_W * 1.1, WORLD_D, 160, 20);
 groundGeo.rotateX(-Math.PI / 2);
 const groundMat = makeBendMat(0x0d0d0d);
 const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.position.set(WORLD_W * 0.5, 0, 0);
+ground.position.set(RING_W * 0.5, 0, 0);
 scene.add(ground);
-
-// Street grid overlay (dark strips baked into a second thin plane)
-const streetGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 1, 1);
-streetGeo.rotateX(-Math.PI / 2);
-const streetMat = makeBendMat(0x060606);
-const streets = new THREE.Mesh(streetGeo, streetMat);
-streets.position.set(WORLD_W * 0.5, 0.01, 0);
-scene.add(streets);
 
 // ─── Building instanced meshes ────────────────────────────────────────────────
 // 4 building type variants
@@ -373,6 +370,42 @@ for (let slot = 0; slot < ACTIVE; slot++) {
 }
 
 buildingMeshes.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+
+// ─── Frontier structures (dark, passthrough, ~40% density) ───────────────────
+const frontierGeo = new THREE.BoxGeometry(SLOT_W * 0.7, 1, SLOT_D * 0.7);
+const frontierMat = new THREE.ShaderMaterial({
+  vertexShader: WIN_VERT,
+  fragmentShader: WIN_FRAG,
+  uniforms: {
+    bendR:     { value: BEND_R },
+    camX:      { value: 0 },
+    baseColor: { value: new THREE.Color(0x080808) },
+    winColor:  { value: new THREE.Color(0x080808) }, // no emission
+  },
+});
+allBendMats.push(frontierMat);
+const FRONTIER_COUNT = Math.floor(FRONTIER_COLS * ROWS * 0.4);
+const frontierMesh = new THREE.InstancedMesh(frontierGeo, frontierMat, FRONTIER_COUNT);
+frontierMesh.count = 0;
+scene.add(frontierMesh);
+
+for (let i = 0; i < FRONTIER_COLS * ROWS; i++) {
+  if (hash(i + 99999) % 100 >= 40) continue; // ~40% density
+  const col = i % FRONTIER_COLS;
+  const row = Math.floor(i / FRONTIER_COLS);
+  const blockCol = Math.floor(col / STREET_EVERY);
+  const blockRow = Math.floor(row / STREET_EVERY);
+  const fx = WORLD_W + col * SLOT_W + blockCol * STREET_W + SLOT_W * 0.5;
+  const fz = row * SLOT_D + blockRow * STREET_W + SLOT_D * 0.5 - WORLD_D * 0.5;
+  const fh = rng(hash(i + 88888), 2, 16);
+  dummy.position.set(fx, fh * 0.5, fz);
+  dummy.scale.set(1, fh, 1);
+  dummy.updateMatrix();
+  if (frontierMesh.count < FRONTIER_COUNT) {
+    frontierMesh.setMatrixAt(frontierMesh.count++, dummy.matrix);
+  }
+}
+frontierMesh.instanceMatrix.needsUpdate = true;
 
 // ─── Drone ────────────────────────────────────────────────────────────────────
 const droneGroup = new THREE.Group();
@@ -539,8 +572,36 @@ function loop() {
   dronePos.y += dronePitch * speed * 0.5;
   dronePos.y  = Math.max(4, dronePos.y);  // don't clip through ground
 
-  // Wrap X — ring is a loop, flying past the end brings you back to the start
-  dronePos.x = ((dronePos.x % WORLD_W) + WORLD_W) % WORLD_W;
+  // Wrap at end of frontier — city → dark frontier → back to city
+  dronePos.x = ((dronePos.x % RING_W) + RING_W) % RING_W;
+
+  // City collision — push drone out of orange building footprints
+  if (dronePos.x < WORLD_W) {
+    const stepX = SLOT_W + STREET_W / STREET_EVERY;
+    const stepZ = SLOT_D + STREET_W / STREET_EVERY;
+    const nearCol = Math.round((dronePos.x - SLOT_W * 0.5) / stepX);
+    const nearRow = Math.round((dronePos.z + WORLD_D * 0.5 - SLOT_D * 0.5) / stepZ);
+    for (let dc = -1; dc <= 1; dc++) {
+      for (let dr = -1; dr <= 1; dr++) {
+        const c = nearCol + dc, r = nearRow + dr;
+        if (c < 0 || c >= COLS || r < 0 || r >= ROWS) continue;
+        const slot = r * COLS + c;
+        if (slot >= ACTIVE) continue;
+        const { x: bx, z: bz } = slotToWorld(c, r);
+        const bh = rng(hash(slot), 4, 32);
+        const hw = SLOT_W * 0.8 * 0.5 + 0.5;
+        const hd = SLOT_D * 0.8 * 0.5 + 0.5;
+        if (dronePos.y < bh &&
+            dronePos.x > bx - hw && dronePos.x < bx + hw &&
+            dronePos.z > bz - hd && dronePos.z < bz + hd) {
+          const ox = Math.abs(dronePos.x - bx) - hw;
+          const oz = Math.abs(dronePos.z - bz) - hd;
+          if (ox > oz) dronePos.x = bx + Math.sign(dronePos.x - bx) * hw;
+          else         dronePos.z = bz + Math.sign(dronePos.z - bz) * hd;
+        }
+      }
+    }
+  }
 
   // Drone mesh
   droneGroup.position.copy(dronePos);
