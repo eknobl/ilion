@@ -571,6 +571,8 @@ function loop() {
   dronePos.z += Math.sin(droneYaw) * speed;
   dronePos.y += dronePitch * speed * 0.5;
   dronePos.y  = Math.max(4, dronePos.y);  // don't clip through ground
+  const zEdge = WORLD_D * 0.5 - 2;
+  dronePos.z  = Math.max(-zEdge, Math.min(zEdge, dronePos.z)); // stay on ring band
 
   // Wrap at end of frontier — city → dark frontier → back to city
   dronePos.x = ((dronePos.x % RING_W) + RING_W) % RING_W;
