@@ -143,8 +143,8 @@ const SLOT_D      = 4;     // world units per slot (width direction)
 const STREET_EVERY = 10;   // street gap every N slots
 const STREET_W    = 2;     // street width in world units
 
-// Ring bend radius — lower = tighter curve. 800 gives visible ring feel at ground level.
-const BEND_R      = 800;
+// Ring bend radius — lower = tighter curve. 600 gives clear ring arc at mid-range.
+const BEND_R      = 600;
 
 // Grid world dimensions
 const WORLD_W = COLS * SLOT_W + Math.floor(COLS / STREET_EVERY) * STREET_W;
@@ -197,7 +197,7 @@ renderer.domElement.id = 'renderer-canvas';
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x000000, 300, 900);
+scene.fog = new THREE.Fog(0x000000, 500, 1400);
 
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.5, 1200);
 
@@ -538,6 +538,9 @@ function loop() {
   dronePos.z += Math.sin(droneYaw) * speed;
   dronePos.y += dronePitch * speed * 0.5;
   dronePos.y  = Math.max(4, dronePos.y);  // don't clip through ground
+
+  // Wrap X — ring is a loop, flying past the end brings you back to the start
+  dronePos.x = ((dronePos.x % WORLD_W) + WORLD_W) % WORLD_W;
 
   // Drone mesh
   droneGroup.position.copy(dronePos);
