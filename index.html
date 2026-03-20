@@ -202,9 +202,9 @@ renderer.domElement.id = 'renderer-canvas';
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x000000, 500, 1400);
+scene.fog = new THREE.Fog(0x000000, 800, 3500);
 
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.5, 1200);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.5, 4000);
 
 window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
@@ -609,15 +609,21 @@ function loop() {
   droneGroup.rotation.y = -droneYaw;
   droneGroup.rotation.x =  dronePitch * 0.5;
 
-  // Camera follow
+  // Camera follow — pull back and tilt up as altitude increases
+  const altFactor  = Math.min(dronePos.y / 120, 1.0); // 0 at ground, 1 at y=120+
+  const pullBack   = 22 + altFactor * 60;              // 22 → 82 units behind
+  const camUp      = 10 + altFactor * 40;              // 10 → 50 units above
+  const tgtForward = 30 + altFactor * 80;              // look further ahead
+  const tgtUp      = -2 + altFactor * 30;              // look upward at altitude
+
   const camOffset = new THREE.Vector3(
-    -Math.cos(droneYaw) * 22,
-    10,
-    -Math.sin(droneYaw) * 22
+    -Math.cos(droneYaw) * pullBack,
+    camUp,
+    -Math.sin(droneYaw) * pullBack
   );
   const goalPos = dronePos.clone().add(camOffset);
   const goalTgt = dronePos.clone().add(
-    new THREE.Vector3(Math.cos(droneYaw) * 30, -2, Math.sin(droneYaw) * 30)
+    new THREE.Vector3(Math.cos(droneYaw) * tgtForward, tgtUp, Math.sin(droneYaw) * tgtForward)
   );
 
   if (!camInit) {
