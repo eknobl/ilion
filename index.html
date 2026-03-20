@@ -575,7 +575,8 @@ function loop() {
   // Wrap at end of frontier — city → dark frontier → back to city
   dronePos.x = ((dronePos.x % RING_W) + RING_W) % RING_W;
 
-  // City collision — push drone out of orange building footprints
+  // City collision — maintain MIN_DIST clearance from all orange buildings
+  const MIN_DIST = 2.5;
   if (dronePos.x < WORLD_W) {
     const stepX = SLOT_W + STREET_W / STREET_EVERY;
     const stepZ = SLOT_D + STREET_W / STREET_EVERY;
@@ -589,8 +590,8 @@ function loop() {
         if (slot >= ACTIVE) continue;
         const { x: bx, z: bz } = slotToWorld(c, r);
         const bh = rng(hash(slot), 4, 32);
-        const hw = SLOT_W * 0.8 * 0.5 + 0.5;
-        const hd = SLOT_D * 0.8 * 0.5 + 0.5;
+        const hw = SLOT_W * 0.8 * 0.5 + MIN_DIST;
+        const hd = SLOT_D * 0.8 * 0.5 + MIN_DIST;
         if (dronePos.y < bh &&
             dronePos.x > bx - hw && dronePos.x < bx + hw &&
             dronePos.z > bz - hd && dronePos.z < bz + hd) {
