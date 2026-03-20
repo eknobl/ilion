@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ILION</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
+canvas { display: block; }
+#renderer-canvas {
+  position: fixed; top: 0; left: 0; z-index: 0;
+}
+
+#hud {
+  position: fixed; inset: 0; pointer-events: none; z-index: 10;
+  color: #aaa; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+}
+
+#hud-tl {
+  position: absolute; top: 20px; left: 20px;
+  line-height: 1.8; opacity: 0.7;
+}
+#hud-tr {
+  position: absolute; top: 20px; right: 20px;
+  text-align: right; line-height: 1.8; opacity: 0.7;
+}
+#hud-bc {
+  position: absolute; bottom: 36px; left: 50%;
+  transform: translateX(-50%); opacity: 0.45;
+  white-space: nowrap;
+}
+
+.hud-label { color: #555; font-size: 9px; }
+.hud-val   { color: #ccc; }
+.hud-hi    { color: #fff; }
+
+/* minimap */
+#minimap {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  height: 22px; background: #0a0a0a;
+  border-top: 1px solid #222;
+  cursor: pointer; pointer-events: all;
+  overflow: hidden;
+}
+#minimap canvas { display: block; width: 100%; height: 100%; }
+
+/* search */
+#search-wrap {
+  position: absolute; top: 16px; left: 50%;
+  transform: translateX(-50%);
+  pointer-events: all; display: none;
+}
+#search-input {
+  background: #0d0d0d; border: 1px solid #444;
+  color: #fff; font-family: 'Courier New', monospace;
+  font-size: 13px; letter-spacing: 0.1em;
+  padding: 6px 12px; width: 260px; outline: none;
+  text-transform: uppercase;
+}
+#search-hint { color: #555; font-size: 10px; margin-top: 4px; text-align: center; }
+
+/* title */
+#title {
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 44px; background: #fff;
+  display: flex; align-items: center; padding: 0 20px;
+  gap: 12px;
+}
+#title .dot { font-size: 14px; color: #000; }
+#title .name { font-size: 15px; font-weight: 700; color: #000; letter-spacing: 0.2em; }
+#title-stripe {
+  position: absolute; top: 0; right: 0; height: 44px; width: 120px;
+  background: repeating-linear-gradient(
+    -45deg, #e00 0px, #e00 10px, #111 10px, #111 20px
+  );
+}
+
+#warp-label {
+  position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+  color: #f80; font-size: 10px; letter-spacing: 0.25em;
+  opacity: 0; transition: opacity 0.2s;
+}
+</style>
+</head>
+<body>
+
+<div id="title">
+  <span class="dot">:::</span>
+  <span class="name">ILION</span>
+  <div id="title-stripe"></div>
+</div>
+
+<div id="hud">
+  <div id="hud-tl">
+    <div class="hud-label">location</div>
+    <div class="hud-val">&gt; <span id="h-district">—</span></div>
+    <div class="hud-val">&gt; <span id="h-coord">—</span></div>
+    <br>
+    <div class="hud-label">population</div>
+    <div class="hud-val">&gt; <span id="h-active">18,000</span> slots active</div>
+    <div class="hud-val">&gt; <span id="h-total">18,000 / 27,000</span></div>
+  </div>
+
+  <div id="hud-tr">
+    <div class="hud-label">controls</div>
+    <div class="hud-val">mouse &mdash; steer</div>
+    <div class="hud-val">shift &mdash; boost</div>
+    <div class="hud-val">/ &mdash; search</div>
+  </div>
+
+  <div id="warp-label">// WARP //</div>
+
+  <div id="search-wrap">
+    <input id="search-input" placeholder="GITHUB USERNAME" autocomplete="off" spellcheck="false">
+    <div id="search-hint">press enter to fly &nbsp;·&nbsp; esc to cancel</div>
+  </div>
+
+  <div id="hud-bc">move mouse to steer &nbsp;·&nbsp; shift — boost &nbsp;·&nbsp; / — search</div>
+
+  <div id="minimap"><canvas id="mm-canvas"></canvas></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const COLS        = 300;   // slots around circumference
+const ROWS        = 60;    // slots across ring width
+const TOTAL_SLOTS = COLS * ROWS;   // 18,000
+const RING_SLOTS  = COLS * 90;     // 27,000 (full ring)
+const ACTIVE      = 18000;         // 2/3 filled
+
+const SLOT_W      = 4;     // world units per slot (circumference direction)
+const SLOT_D      = 4;     // world units per slot (width direction)
+const STREET_EVERY = 10;   // street gap every N slots
+const STREET_W    = 2;     // street width in world units
+
+// Ring bend radius (higher = less curve)
+const BEND_R      = 2200;
+
+// Grid world dimensions
+const WORLD_W = COLS * SLOT_W + Math.floor(COLS / STREET_EVERY) * STREET_W;
+const WORLD_D = ROWS * SLOT_D + Math.floor(ROWS / STREET_EVERY) * STREET_W;
+
+const DISTRICTS = [
+  'CENTAURI SECTOR','TROY DISTRICT','HEPHAESTUS WARD','KEPLER REACH',
+  'NOVA BASIN','SIGMA CORRIDOR','ARC FOUNDRY','LYRA FIELDS',
+  'CASTOR HUB','UMBRA GATE','CALLISTO ROW','FENRIS SPAN',
+  'OUROBOROS RING','HELIX WARD','SOLARIS DECK','PROXIMA NODE',
+  'EREBUS LANE','DAEDALUS COURT','MNEMONIC STRIP','ATLAS QUARTER',
+  'VEGA DISTRICT','CYGNUS HALL','POLARIS REACH','TERMINUS BLOCK',
+  'NEON FLATS','IRON MERIDIAN','GLASS QUARTER','OBSIDIAN TIER',
+  'ECHO BASIN','FRONTIER EDGE'
+];
+
+// ─── Hash helpers ─────────────────────────────────────────────────────────────
+function hash(n) {
+  n = ((n >> 16) ^ n) * 0x45d9f3b;
+  n = ((n >> 16) ^ n) * 0x45d9f3b;
+  return ((n >> 16) ^ n) >>> 0;
+}
+function hashStr(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h;
+}
+function rng(seed, lo, hi) {
+  return lo + (hash(seed) / 0xffffffff) * (hi - lo);
+}
+
+// ─── Slot → world position ────────────────────────────────────────────────────
+function slotToWorld(col, row) {
+  const blockCol = Math.floor(col / STREET_EVERY);
+  const blockRow = Math.floor(row / STREET_EVERY);
+  const x = col * SLOT_W + blockCol * STREET_W + SLOT_W * 0.5;
+  const z = row * SLOT_D + blockRow * STREET_W + SLOT_D * 0.5 - WORLD_D * 0.5;
+  return { x, z };
+}
+
+// ─── Scene setup ──────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000);
+renderer.domElement.id = 'renderer-canvas';
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x000000, 300, 900);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.5, 1200);
+
+window.addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+// ─── Lighting ─────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x111111));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+sun.position.set(100, 200, 100);
+scene.add(sun);
+
+// ─── Curved-world vertex shader ───────────────────────────────────────────────
+const BEND_VERT = /* glsl */`
+  uniform float bendR;
+  varying vec2 vUv;
+  varying vec3 vNormal;
+
+  void main() {
+    vec4 mvPos = modelMatrix * vec4(position, 1.0);
+    // cylindrical bend along X axis
+    float dist = mvPos.x;
+    float bendY = -(dist * dist) / (2.0 * bendR);
+    mvPos.y += bendY;
+    gl_Position = projectionMatrix * viewMatrix * mvPos;
+    vUv = uv;
+    vNormal = normalMatrix * normal;
+  }
+`;
+
+const BEND_FRAG = /* glsl */`
+  uniform vec3 color;
+  uniform float emissiveStr;
+  varying vec2 vUv;
+  varying vec3 vNormal;
+
+  void main() {
+    float light = dot(normalize(vNormal), normalize(vec3(0.5, 1.0, 0.3))) * 0.5 + 0.5;
+    gl_FragColor = vec4(color * light + color * emissiveStr, 1.0);
+  }
+`;
+
+function makeBendMat(color, emissiveStr = 0.0) {
+  return new THREE.ShaderMaterial({
+    vertexShader: BEND_VERT,
+    fragmentShader: BEND_FRAG,
+    uniforms: {
+      bendR:        { value: BEND_R },
+      color:        { value: new THREE.Color(color) },
+      emissiveStr:  { value: emissiveStr },
+    },
+    side: THREE.DoubleSide,
+  });
+}
+
+// ─── Ground plane ─────────────────────────────────────────────────────────────
+const groundGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 60, 20);
+groundGeo.rotateX(-Math.PI / 2);
+const groundMat = makeBendMat(0x0d0d0d);
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.position.set(WORLD_W * 0.5, 0, 0);
+scene.add(ground);
+
+// Street grid overlay (dark strips baked into a second thin plane)
+const streetGeo = new THREE.PlaneGeometry(WORLD_W * 1.5, WORLD_D, 1, 1);
+streetGeo.rotateX(-Math.PI / 2);
+const streetMat = makeBendMat(0x060606);
+const streets = new THREE.Mesh(streetGeo, streetMat);
+streets.position.set(WORLD_W * 0.5, 0.01, 0);
+scene.add(streets);
+
+// ─── Building instanced meshes ────────────────────────────────────────────────
+// 4 building type variants
+// All variants use the same dark facade + warm amber windows (git-city style)
+const B_TYPES = [
+  { w: 1.8, d: 1.8, color: 0x111108, win: 0xc8840a },
+  { w: 1.4, d: 2.2, color: 0x0e0e0b, win: 0xb07208 },
+  { w: 2.0, d: 1.4, color: 0x131310, win: 0xd49212 },
+  { w: 1.2, d: 1.2, color: 0x0c0c09, win: 0xa06008 },
+];
+
+// Window emissive fragment shader
+const WIN_FRAG = /* glsl */`
+  uniform vec3 baseColor;
+  uniform vec3 winColor;
+  uniform float bendR;
+  varying vec2 vUv;
+  varying vec3 vNormal;
+  varying vec4 vMvPos;
+
+  float window(vec2 uv, vec2 grid) {
+    vec2 cell = fract(uv * grid);
+    vec2 gap = step(0.25, cell) * step(cell, vec2(0.75));
+    return gap.x * gap.y;
+  }
+
+  void main() {
+    float w = window(vUv, vec2(3.0, 6.0));
+    // random flicker per cell — pseudo-random from UV
+    vec2 cellId = floor(vUv * vec2(3.0, 6.0));
+    float r = fract(sin(dot(cellId, vec2(127.1, 311.7))) * 43758.5);
+    float lit = step(0.35, r);
+    float light = dot(normalize(vNormal), normalize(vec3(0.5,1.0,0.3))) * 0.4 + 0.6;
+    vec3 col = baseColor * light + winColor * w * lit * 0.85;
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const WIN_VERT = /* glsl */`
+  uniform float bendR;
+  varying vec2 vUv;
+  varying vec3 vNormal;
+  varying vec4 vMvPos;
+
+  void main() {
+    vec4 mvPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    float dist = mvPos.x;
+    mvPos.y -= (dist * dist) / (2.0 * bendR);
+    gl_Position = projectionMatrix * viewMatrix * mvPos;
+    vUv = uv;
+    vNormal = mat3(modelMatrix * instanceMatrix) * normal;
+    vMvPos = mvPos;
+  }
+`;
+
+const buildingMeshes = B_TYPES.map((t, ti) => {
+  const geo = new THREE.BoxGeometry(t.w * SLOT_W * 0.8, 1, t.d * SLOT_D * 0.8);
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: WIN_VERT,
+    fragmentShader: WIN_FRAG,
+    uniforms: {
+      bendR:     { value: BEND_R },
+      baseColor: { value: new THREE.Color(t.color) },
+      winColor:  { value: new THREE.Color(t.win) },
+    },
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, Math.ceil(ACTIVE / B_TYPES.length) + 200);
+  mesh.count = 0;
+  scene.add(mesh);
+  return mesh;
+});
+
+// Place all active slots
+const dummy = new THREE.Object3D();
+let slotCount = 0;
+
+for (let slot = 0; slot < ACTIVE; slot++) {
+  const col = slot % COLS;
+  const row = Math.floor(slot / COLS);
+  const { x, z } = slotToWorld(col, row);
+
+  const h = rng(hash(slot),     4, 32);
+  const ti = hash(slot + 7)  % B_TYPES.length;
+
+  dummy.position.set(x, h * 0.5, z);
+  dummy.scale.set(1, h, 1);
+  dummy.updateMatrix();
+  buildingMeshes[ti].setMatrixAt(buildingMeshes[ti].count++, dummy.matrix);
+  slotCount++;
+}
+
+buildingMeshes.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+
+// ─── Drone ────────────────────────────────────────────────────────────────────
+const droneGroup = new THREE.Group();
+scene.add(droneGroup);
+
+function droneFrame(color, sx, sy, sz) {
+  const geo = new THREE.BoxGeometry(sx, sy, sz);
+  const mat = new THREE.MeshBasicMaterial({ color, wireframe: true });
+  return new THREE.Mesh(geo, mat);
+}
+
+const droneBody  = droneFrame(0xaaaacc, 3.2, 0.6, 1.8);
+const droneWingL = droneFrame(0x8888aa, 1.0, 0.3, 2.4);
+droneWingL.position.set(-1.8, 0, 0);
+const droneWingR = droneFrame(0x8888aa, 1.0, 0.3, 2.4);
+droneWingR.position.set( 1.8, 0, 0);
+const droneFore  = droneFrame(0xff3333, 0.5, 1.4, 0.5);
+droneFore.position.set(0, 0,  1.1);
+const droneAft   = droneFrame(0xff3333, 0.5, 1.4, 0.5);
+droneAft.position.set(0, 0, -1.1);
+
+droneGroup.add(droneBody, droneWingL, droneWingR, droneFore, droneAft);
+
+// Drone state
+const dronePos   = new THREE.Vector3(WORLD_W * 0.1, 18, 0);
+let   droneYaw   = 0;   // radians, 0 = facing +X
+let   dronePitch = 0;
+
+// Mouse steering
+let mouseX = 0, mouseY = 0;
+window.addEventListener('mousemove', e => {
+  mouseX = (e.clientX / innerWidth  - 0.5) * 2;
+  mouseY = (e.clientY / innerHeight - 0.5) * 2;
+});
+
+// Speed
+const SPEED_BASE  = 0.55;
+const SPEED_BOOST = 2.8;
+const SPEED_WARP  = 110;
+let   shiftDown   = false;
+let   lastShift   = 0;
+let   warpActive  = false;
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Shift') {
+    const now = performance.now();
+    if (now - lastShift < 350) {
+      warpActive = !warpActive;
+      document.getElementById('warp-label').style.opacity = warpActive ? '1' : '0';
+    }
+    lastShift = now;
+    shiftDown = true;
+  }
+  if (e.key === '/') { e.preventDefault(); toggleSearch(true); }
+  if (e.key === 'Escape') { toggleSearch(false); }
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'Shift') shiftDown = false;
+});
+
+// Camera follow state
+const camPos = new THREE.Vector3();
+const camTgt = new THREE.Vector3();
+let   camInit = false;
+
+// ─── Search ───────────────────────────────────────────────────────────────────
+function toggleSearch(on) {
+  const wrap = document.getElementById('search-wrap');
+  wrap.style.display = on ? 'block' : 'none';
+  if (on) document.getElementById('search-input').focus();
+  else    document.getElementById('search-input').blur();
+}
+
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const val = e.target.value.trim();
+  if (!val) return;
+  const slot  = hashStr(val.toLowerCase()) % ACTIVE;
+  const col   = slot % COLS;
+  const row   = Math.floor(slot / COLS);
+  const { x, z } = slotToWorld(col, row);
+  dronePos.set(x, 18, z);
+  toggleSearch(false);
+  e.target.value = '';
+});
+
+// ─── Minimap ──────────────────────────────────────────────────────────────────
+const mmCanvas = document.getElementById('mm-canvas');
+const mmCtx    = mmCanvas.getContext('2d');
+
+function drawMinimap() {
+  const W = mmCanvas.width  = mmCanvas.offsetWidth  * devicePixelRatio;
+  const H = mmCanvas.height = mmCanvas.offsetHeight * devicePixelRatio;
+  mmCtx.clearRect(0, 0, W, H);
+
+  // Active sector (2/3)
+  const activeW = W * (ACTIVE / RING_SLOTS);
+  mmCtx.fillStyle = '#2a1f08';
+  mmCtx.fillRect(0, 0, activeW, H);
+
+  // Frontier (1/3)
+  mmCtx.fillStyle = '#0a0a0a';
+  mmCtx.fillRect(activeW, 0, W - activeW, H);
+
+  // District lines
+  const districtW = W / 30;
+  mmCtx.strokeStyle = '#333';
+  mmCtx.lineWidth = 1;
+  for (let i = 1; i < 30; i++) {
+    mmCtx.beginPath();
+    mmCtx.moveTo(i * districtW, 0);
+    mmCtx.lineTo(i * districtW, H);
+    mmCtx.stroke();
+  }
+
+  // Drone position dot
+  const droneU = dronePos.x / (WORLD_W * 1.0);
+  const dotX   = Math.min(Math.max(droneU, 0), 1) * activeW;
+  mmCtx.fillStyle = '#fff';
+  mmCtx.beginPath();
+  mmCtx.arc(dotX, H * 0.5, 3 * devicePixelRatio, 0, Math.PI * 2);
+  mmCtx.fill();
+}
+
+// Minimap click → teleport
+document.getElementById('minimap').addEventListener('click', e => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const u    = (e.clientX - rect.left) / rect.width;
+  const frac = u * (ACTIVE / RING_SLOTS);
+  dronePos.x = frac * WORLD_W;
+});
+
+// ─── HUD update ───────────────────────────────────────────────────────────────
+function updateHUD() {
+  const col      = Math.floor(dronePos.x / (SLOT_W + STREET_W / STREET_EVERY));
+  const distIdx  = Math.floor(col / (COLS / 30)) % 30;
+  const distName = DISTRICTS[Math.max(0, Math.min(distIdx, 29))];
+
+  document.getElementById('h-district').textContent = distName;
+  document.getElementById('h-coord').textContent    =
+    `COL ${Math.max(0, Math.min(col, COLS - 1))} · ROW ${
+      Math.floor((dronePos.z + WORLD_D * 0.5) / SLOT_D)}`;
+}
+
+// ─── Animation loop ───────────────────────────────────────────────────────────
+function loop() {
+  requestAnimationFrame(loop);
+
+  // Steer from mouse
+  const YAW_RATE   = 0.022;
+  const PITCH_RATE = 0.016;
+  droneYaw   += mouseX * YAW_RATE;
+  dronePitch -= mouseY * PITCH_RATE;
+  dronePitch  = Math.max(-0.6, Math.min(0.6, dronePitch));
+
+  // Speed selection
+  const speed = warpActive ? SPEED_WARP
+              : shiftDown  ? SPEED_BOOST
+              : SPEED_BASE;
+
+  // Move forward in yaw direction
+  dronePos.x += Math.cos(droneYaw) * speed;
+  dronePos.z += Math.sin(droneYaw) * speed;
+  dronePos.y += dronePitch * speed * 0.5;
+  dronePos.y  = Math.max(4, dronePos.y);  // don't clip through ground
+
+  // Drone mesh
+  droneGroup.position.copy(dronePos);
+  droneGroup.rotation.y = -droneYaw;
+  droneGroup.rotation.x =  dronePitch * 0.5;
+
+  // Camera follow
+  const camOffset = new THREE.Vector3(
+    -Math.cos(droneYaw) * 22,
+    10,
+    -Math.sin(droneYaw) * 22
+  );
+  const goalPos = dronePos.clone().add(camOffset);
+  const goalTgt = dronePos.clone().add(
+    new THREE.Vector3(Math.cos(droneYaw) * 30, -2, Math.sin(droneYaw) * 30)
+  );
+
+  if (!camInit) {
+    camPos.copy(goalPos);
+    camTgt.copy(goalTgt);
+    camInit = true;
+  }
+  camPos.lerp(goalPos, 0.10);
+  camTgt.lerp(goalTgt, 0.12);
+
+  camera.position.copy(camPos);
+  camera.lookAt(camTgt);
+
+  drawMinimap();
+  updateHUD();
+
+  renderer.render(scene, camera);
+}
+
+loop();
+</script>
+</body>
+</html>
